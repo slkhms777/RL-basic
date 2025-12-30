@@ -1,1 +1,6 @@
 numpy
+torch
+tqdm
+matplotlib
+gymnasium[classic-control]
+pygame
