@@ -8,11 +8,15 @@
 - `dp.py`：动态规划（值迭代、策略迭代等）
 - `mc.py`：蒙特卡洛方法
 - `td.py`：时序差分方法（SARSA、Q-Learning 等）
-- `requirement.txt`：依赖包列表
+- `dqn.py`：深度 Q-learning 网络（DQN）
+- `reinforce.py`：策略梯度方法
+- `actor_critic.py`：演员-评论家方法
+
 
 ## 环境说明
 
-本项目以格子世界（GridWorld）为例，支持自定义障碍、目标状态、奖励与惩罚等。可用于对比不同 RL 算法的收敛效果和策略表现。
+前5个算法使用《强化学习中的数学原理》中的网格世界环境, 后2个算法使用 OpenAI Gym 中的 CartPole 环境
+
 
 ## 快速开始
 
@@ -28,5 +32,7 @@ python dp.py
 
 ## 参考资料
 - [《强化学习中的数学原理》](https://github.com/MathFoundationRL/Book-Mathmatical-Foundation-of-Reinforcement-Learning)
+- [《动手学强化学习》](https://hrl.boyuai.com)
+- [OpenAI Gym](https://gym.openai.com/)
 - Sutton & Barto, Reinforcement Learning: An Introduction
 
