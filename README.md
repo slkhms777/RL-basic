@@ -34,5 +34,7 @@ python dp.py
 - [《强化学习中的数学原理》](https://github.com/MathFoundationRL/Book-Mathmatical-Foundation-of-Reinforcement-Learning)
 - [《动手学强化学习》](https://hrl.boyuai.com)
 - [OpenAI Gym](https://gym.openai.com/)
-- Sutton & Barto, Reinforcement Learning: An Introduction
 
+
+## 致谢
+- 感谢 [@haukzero](https://github.com/haukzero) 提供的改进建议。
