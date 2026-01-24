@@ -11,11 +11,13 @@
 - `dqn.py`：深度 Q-learning 网络（DQN）
 - `reinforce.py`：策略梯度方法
 - `actor_critic.py`：演员-评论家方法
+- `trpo.py`：信赖域策略优化（TRPO）
+- `ppo_clip.py`：近段策略优化（PPO）
 
 
 ## 环境说明
 
-前5个算法使用《强化学习中的数学原理》中的网格世界环境, 后2个算法使用 OpenAI Gym 中的 CartPole 环境
+前5个算法使用《强化学习中的数学原理》中的网格世界环境, 后4个算法使用 OpenAI Gym 中的 CartPole 环境
 
 
 ## 快速开始
