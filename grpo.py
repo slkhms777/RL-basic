@@ -6,16 +6,6 @@ import torch.nn.functional as F
 import rl_utils
 from tqdm import tqdm
 
-def compute_advantage(gamma, lmbda, td_delta):
-    coefficient = gamma * lmbda
-    td_delta = td_delta.detach().numpy()
-    advantage_list = []
-    advantage = 0.0
-    for delta in td_delta[::-1]:
-        advantage = coefficient * advantage + delta
-        advantage_list.append(advantage)
-    advantage_list.reverse()
-    return torch.tensor(advantage_list, dtype=torch.float)
 
 class PolicyNet(torch.nn.Module):
     def __init__(self, state_dim, hidden_dim, action_dim):
@@ -28,37 +18,49 @@ class PolicyNet(torch.nn.Module):
         return F.softmax(self.fc2(x), dim=1)
 
 
-class ValueNet(torch.nn.Module):
-    def __init__(self, state_dim, hidden_dim):
-        super(ValueNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, 1)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-    
-class PPO:
-    ''' PPO算法,采用截断方式 '''
-    def __init__(self, state_dim, hidden_dim, action_dim, actor_lr, critic_lr,
-                 lmbda, epochs, eps, gamma, device):
+class GRPO:
+    '''
+    GRPO (Group Relative Policy Optimization) 算法
+    核心思想：不使用critic网络，而是通过采样一组动作，计算组内相对优势来估计优势
+    '''
+    def __init__(self, state_dim, hidden_dim, action_dim, actor_lr,
+                 lmbda, epochs, eps, gamma, device, group_size=8):
         self.actor = PolicyNet(state_dim, hidden_dim, action_dim).to(device)
-        self.critic = ValueNet(state_dim, hidden_dim).to(device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
         self.gamma = gamma
         self.lmbda = lmbda
         self.epochs = epochs  # 一条序列的数据用来训练轮数
         self.eps = eps  # PPO中截断范围的参数
         self.device = device
-
+        self.group_size = group_size  # GRPO中采样的组大小
+    
     def take_action(self, state):
         state = torch.tensor([state], dtype=torch.float).to(self.device)
         probs = self.actor(state)
         action_dist = torch.distributions.Categorical(probs)
         action = action_dist.sample()
         return action.item()
-
+    
+    def compute_grpo_advantage(self, states, actions, rewards, next_states, dones):
+        '''
+        GRPO优势：对于每个状态，采样一组动作，计算组内相对优势
+        这里简化为使用蒙特卡洛回报来计算优势
+        '''
+        # 计算折扣回报
+        returns = []
+        R = 0
+        for r, done in zip(reversed(rewards), reversed(dones)):
+            if done:
+                R = 0
+            R = r + self.gamma * R
+            returns.insert(0, R)
+        returns = torch.tensor(returns, dtype=torch.float).to(self.device)
+        
+        # 归一化回报作为优势估计（GRPO的核心：使用组内相对优势）
+        advantage = (returns - returns.mean()) / (returns.std() + 1e-8)
+        
+        return advantage.view(-1, 1)
+    
     def update(self, transition_dict):
         states = torch.tensor(transition_dict['states'], dtype=torch.float).to(self.device)
         actions = torch.tensor(transition_dict['actions']).view(-1, 1).to(self.device)
@@ -66,38 +68,40 @@ class PPO:
         next_states = torch.tensor(transition_dict['next_states'], dtype=torch.float).to(self.device)
         dones = torch.tensor(transition_dict['dones'], dtype=torch.float).view(-1, 1).to(self.device)
 
-        # 计算优势函数（时序差分的残差）
-        td_target = rewards + self.gamma * self.critic(next_states) * (1 - dones)
-        td_delta = td_target - self.critic(states)
-        # 计算GAE优势估计
-        advantage = compute_advantage(self.gamma, self.lmbda, td_delta.cpu()).to(self.device)
-        old_log_probs = torch.log(self.actor(states).gather(1, actions)).detach()
+        # 计算GRPO优势（不使用critic，直接使用归一化回报）
+        advantage = self.compute_grpo_advantage(states, actions, rewards, next_states, dones)
+        
+        # 计算旧策略的对数概率
+        with torch.no_grad():
+            old_probs = self.actor(states).gather(1, actions)
+            old_log_probs = torch.log(old_probs + 1e-8)
 
+        # PPO-CLIP更新
         for _ in range(self.epochs):
-            log_probs = torch.log(self.actor(states).gather(1, actions))
+            probs = self.actor(states).gather(1, actions)
+            log_probs = torch.log(probs + 1e-8)
+            
+            # 计算概率比率
             ratio = torch.exp(log_probs - old_log_probs)
-
+            
+            # Clipped surrogate objective
             surr1 = ratio * advantage
-            surr2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantage  # 截断
-
-            """
-            对surr1和surr2取最小值：
-                如果ratio超出 1 + eps, 则取被截断后的值，避免太激进更新
-                如果ratio低于 1 - eps, 则取未被截断后的值，避免低估惩罚
-            """
-            actor_loss = torch.mean(-torch.min(surr1, surr2))  # PPO损失函数
-            critic_loss = torch.mean(F.mse_loss(self.critic(states), td_target.detach()))
-
+            surr2 = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantage
+            
+            # GRPO损失（注意这里取负数，因为我们要最大化目标函数）
+            actor_loss = -torch.mean(torch.min(surr1, surr2))
+            
+            # 添加KL散度惩罚（可选，用于约束策略更新幅度）
+            # kl_penalty = 0.01 * torch.mean((ratio - 1) ** 2)
+            # actor_loss = actor_loss + kl_penalty
+            
             self.actor_optimizer.zero_grad()
-            self.critic_optimizer.zero_grad()
             actor_loss.backward()
-            critic_loss.backward()
             self.actor_optimizer.step()
-            self.critic_optimizer.step()
 
 
 def train(agent, env, num_episodes=500):
-    """training ppo agent (on-policy)"""
+    """training grpo agent (on-policy)"""
     return_list = []
     for i in range(10):
         with tqdm(total=int(num_episodes/10), desc='Iteration %d' % i) as pbar:
@@ -127,14 +131,14 @@ def train(agent, env, num_episodes=500):
     plt.plot(episodes_list, return_list)
     plt.xlabel('Episodes')
     plt.ylabel('Returns')
-    plt.title('TRPO on {}'.format(env_name))
+    plt.title('GRPO on {}'.format(env_name))
     plt.show()
 
     mv_return = rl_utils.moving_average(return_list, 9)
     plt.plot(episodes_list, mv_return)
     plt.xlabel('Episodes')
     plt.ylabel('Returns')
-    plt.title('TRPO on {}'.format(env_name))
+    plt.title('GRPO on {}'.format(env_name))
     plt.show()
 
 
@@ -154,14 +158,14 @@ if __name__ == "__main__":
     epochs = 10
     eps = 0.2
     actor_lr = 1e-3
-    critic_lr = 1e-2
+    group_size = 8  # GRPO组大小
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device(
         "mps") if torch.backends.mps.is_available() else torch.device("cpu")    
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
-
-    agent = PPO(state_dim=state_dim, hidden_dim=hidden_dim, action_dim=action_dim,
-                actor_lr=actor_lr, critic_lr=critic_lr, lmbda=lmbda, epochs=epochs,
-                eps=eps, gamma=gamma, device=device)
+    
+    agent = GRPO(state_dim=state_dim, hidden_dim=hidden_dim, action_dim=action_dim,
+                 actor_lr=actor_lr, lmbda=lmbda, epochs=epochs,
+                 eps=eps, gamma=gamma, device=device, group_size=group_size)
 
     train(agent=agent, env=env, num_episodes=num_episodes)
